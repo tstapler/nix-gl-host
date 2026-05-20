@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -305,12 +306,30 @@ def get_ld_paths() -> List[str]:
     return [path for path in paths if os.path.isdir(path)]
 
 
+def _host_elf_class() -> int:
+    """Return ELF class (1=32-bit, 2=64-bit) matching the current process."""
+    return 2 if struct.calcsize("P") == 8 else 1
+
+
+def _elf_class(path: str) -> Optional[int]:
+    """Read ELF class byte from a DSO. Returns None if file is not an ELF."""
+    try:
+        with open(path, "rb") as f:
+            magic = f.read(5)
+        if len(magic) == 5 and magic[:4] == b"\x7fELF":
+            return magic[4]  # EI_CLASS: 1=ELFCLASS32, 2=ELFCLASS64
+    except OSError:
+        pass
+    return None
+
+
 def resolve_libraries(path: str, files_patterns: List[str]) -> List[ResolvedLib]:
     """Scans the PATH directory looking for the files complying with
     the FILES_PATTERNS regexes list.
 
     Returns the list of the resolved DSOs."""
     libraries: List[ResolvedLib] = []
+    host_elf_class = _host_elf_class()
 
     def is_dso_matching_pattern(filename):
         for pattern in files_patterns:
@@ -322,6 +341,12 @@ def resolve_libraries(path: str, files_patterns: List[str]) -> List[ResolvedLib]
         for fname in os.listdir(path):
             abs_file_path = os.path.abspath(os.path.join(path, fname))
             if os.path.isfile(abs_file_path) and is_dso_matching_pattern(abs_file_path):
+                elf_class = _elf_class(abs_file_path)
+                if elf_class is not None and elf_class != host_elf_class:
+                    log_info(
+                        f"Skipping {abs_file_path}: ELF class {elf_class} != host {host_elf_class}"
+                    )
+                    continue
                 libraries.append(
                     ResolvedLib(name=fname, dirpath=path, fullpath=abs_file_path)
                 )
